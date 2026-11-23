@@ -1,0 +1,51 @@
+name: GitHub Release Notes
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.event.deleted == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Create release for the version tag
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const match = /^refs\/tags\/(v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))$/.exec(context.ref);
+            if (!match || context.payload.deleted) {
+              core.notice('Release notes require an existing vMAJOR.MINOR.PATCH tag.');
+              return;
+            }
+            const tag = match[1];
+            const repository = { ...context.repo, tag };
+            try {
+              const { data } = await github.rest.repos.getReleaseByTag(repository);
+              core.notice(`Release already exists: ${data.html_url}`);
+              return;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            await github.rest.git.getRef({ ...context.repo, ref: `tags/${tag}` });
+            const { data } = await github.rest.repos.createRelease({
+              ...context.repo,
+              tag_name: tag,
+              target_commitish: context.sha,
+              name: tag,
+              generate_release_notes: true,
+              draft: false,
+              prerelease: false,
+              make_latest: 'legacy',
+            });
+            core.notice(`Release notes published: ${data.html_url}`);

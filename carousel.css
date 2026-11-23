@@ -1,0 +1,34 @@
+@import "./core.css";
+
+.rc-controls,
+.rc-pagination {
+  padding-block: var(--rc-control-spacing, 8px);
+}
+
+.rc-control,
+.rc-page {
+  min-width: var(--rc-control-size, 44px);
+  min-height: var(--rc-control-size, 44px);
+  padding: 8px 12px;
+  border: 1px solid var(--rc-control-border, #64748b);
+  border-radius: var(--rc-control-radius, 6px);
+  background: var(--rc-control-background, #fff);
+  color: var(--rc-control-color, #172033);
+  font: inherit;
+  cursor: pointer;
+}
+
+.rc-control:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.rc-page[aria-current="true"] {
+  border-width: 2px;
+  font-weight: bold;
+}
+
+.rc-root :focus-visible {
+  outline: 3px solid var(--rc-focus-color, #2563eb);
+  outline-offset: 2px;
+}

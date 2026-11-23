@@ -1,0 +1,82 @@
+{
+  "name": "@obinesto/react-carousel",
+  "version": "1.0.0",
+  "description": "A React carousel component with scrolling and navigation behaviours",
+  "main": "carousel/carousel.js",
+  "module": "carousel/carousel.mjs",
+  "types": "carousel/carousel.d.ts",
+  "exports": {
+    ".": {
+      "types": "./carousel/carousel.d.ts",
+      "import": "./carousel/carousel.mjs",
+      "require": "./carousel/carousel.js"
+    },
+    "./carousel/carousel.css": "./carousel/carousel.css",
+    "./core.css": "./carousel/core.css"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/obinesto/react-carousel.git"
+  },
+  "files": [
+    "carousel"
+  ],
+  "scripts": {
+    "prebuild:package": "node scripts/clean-carousel.cjs",
+    "build:package": "rollup -c rollup.config.mjs",
+    "typecheck": "tsc --noEmit --pretty false",
+    "test": "jest",
+    "test:release": "node --test .github/scripts/npm/npm-release.test.cjs .github/scripts/github/github-release.test.cjs",
+    "test:package": "node scripts/check-package.cjs",
+    "test:browser": "node --test tests/browser/carousel.cjs"
+  },
+  "keywords": [
+    "react",
+    "carousel",
+    "scroll",
+    "slider",
+    "typescript",
+    "javascript"
+  ],
+  "author": "Cyprian Obi",
+  "license": "MIT",
+  "type": "commonjs",
+  "devDependencies": {
+    "@babel/preset-env": "^7.28.3",
+    "@babel/preset-react": "^7.27.1",
+    "@babel/preset-typescript": "^7.27.1",
+    "@rollup/plugin-commonjs": "^28.0.6",
+    "@rollup/plugin-node-resolve": "^16.0.1",
+    "@rollup/plugin-typescript": "^12.1.4",
+    "@testing-library/jest-dom": "^6.7.0",
+    "@testing-library/react": "^16.3.0",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^24.3.0",
+    "@types/react": "^19.1.10",
+    "@types/react-dom": "^19.3.0",
+    "babel-jest": "^29.7.0",
+    "jest": "^29.7.0",
+    "jest-environment-jsdom": "^29.7.0",
+    "playwright": "^1.65.1",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "rollup": "^4.46.3",
+    "rollup-plugin-copy": "^3.5.0",
+    "rollup-plugin-peer-deps-external": "^2.2.4",
+    "ts-jest": "^29.4.1",
+    "tslib": "^2.8.1",
+    "typescript": "^5.9.2"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "react-dom": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": false
+    },
+    "react-dom": {
+      "optional": false
+    }
+  }
+}
