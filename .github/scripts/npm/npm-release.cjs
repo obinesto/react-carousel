@@ -10,8 +10,24 @@ function parseVersion(version) {
   return parts;
 }
 
+function isInitialPublication(metadata) {
+  if (metadata === null) return true;
+  const versions = Object.keys(metadata.versions ?? {});
+  const latest = metadata['dist-tags']?.latest;
+  return versions.length === 1 && versions[0] === '0.0.0-stage' &&
+    (!latest || latest === '0.0.0-stage');
+}
+
 function planRelease({ version, metadata, sha }) {
   parseVersion(version);
+  if (isInitialPublication(metadata)) {
+    return {
+      publish: true,
+      latest: metadata?.['dist-tags']?.latest ?? '',
+      version,
+      reason: `Stage initial release ${version} from package.json without a version increment. Publication requires maintainer approval.`,
+    };
+  }
   const latest = metadata['dist-tags']?.latest;
   if (!latest || !metadata.versions?.[latest]) {
     throw new Error('npm has no valid latest tag. Restore the latest tag before releasing this existing package.');
@@ -45,6 +61,22 @@ function planRelease({ version, metadata, sha }) {
   };
 }
 
+function verifyRegistry({ version, metadata, expectedLatest }) {
+  parseVersion(version);
+  if (expectedLatest === undefined) {
+    throw new Error('Missing EXPECTED_LATEST. Run release planning before verifying the registry.');
+  }
+  if (expectedLatest === '' || expectedLatest === '0.0.0-stage') {
+    if (!isInitialPublication(metadata)) {
+      throw new Error('Registry changed after planning the initial release. A published package version is now present. Re-run release planning before staging.');
+    }
+    return;
+  }
+  if (metadata === null || metadata['dist-tags']?.latest !== expectedLatest || metadata.versions?.[version]) {
+    throw new Error(`Registry changed after planning. Expected latest ${expectedLatest} and unused target ${version}. Re-run against the current registry before staging.`);
+  }
+}
+
 async function readRegistry(name) {
   let response;
   try {
@@ -54,18 +86,20 @@ async function readRegistry(name) {
   } catch (error) {
     throw new Error(`Cannot read npm registry: ${error.message}. Check network access and npm status, then retry. No release was attempted.`);
   }
+  if (response.status === 404) return null;
   if (!response.ok) throw new Error(`npm registry returned HTTP ${response.status}. Check the package name, registry availability, and package access. No release was attempted.`);
-  return response.json();
+  const metadata = await response.json();
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+    throw new Error('npm registry returned invalid package metadata. Check registry availability before retrying. No release was attempted.');
+  }
+  return metadata;
 }
 
 async function main() {
   const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
   const metadata = await readRegistry(pkg.name);
   if (process.argv[2] === 'verify') {
-    const latest = process.env.EXPECTED_LATEST;
-    if (metadata['dist-tags']?.latest !== latest || metadata.versions?.[pkg.version]) {
-      throw new Error(`Registry changed after planning. Expected latest ${latest} and unused target ${pkg.version}. Re-run against the current registry before staging.`);
-    }
+    verifyRegistry({ version: pkg.version, metadata, expectedLatest: process.env.EXPECTED_LATEST });
     console.log(`Registry still permits ${pkg.name}@${pkg.version}.`);
     return;
   }
@@ -81,11 +115,11 @@ async function main() {
       `publish=${plan.publish}\nversion=${plan.version}\nlatest=${plan.latest}\n`);
   }
   if (process.env.GITHUB_STEP_SUMMARY) {
-    fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### npm release decision\n\n${plan.reason}\n\nSource version: ${pkg.version}. Registry latest: ${plan.latest}.\n`);
+    fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### npm release decision\n\n${plan.reason}\n\nSource version: ${pkg.version}. Registry latest: ${plan.latest || 'none (initial publication)'}.\n`);
   }
 }
 
-module.exports = { planRelease, readRegistry };
+module.exports = { planRelease, readRegistry, verifyRegistry };
 if (require.main === module) main().catch(error => {
   const message = `Release stopped: ${error.message}`;
   console.error(message);
