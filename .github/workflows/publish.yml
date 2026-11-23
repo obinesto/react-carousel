@@ -97,7 +97,7 @@ jobs:
 
       - name: Build package
         if: steps.release.outputs.publish == 'true'
-        run: npm run build
+        run: npm run build:package
 
       - name: Validate package contents and module entry points
         if: steps.release.outputs.publish == 'true'

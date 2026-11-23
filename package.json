@@ -4,10 +4,10 @@
   "description": "A React carousel component with scrolling and navigation behaviours",
   "main": "carousel/carousel.js",
   "module": "carousel/carousel.mjs",
-  "types": "carousel/carousel.d.ts",
+  "types": "carousel/index.d.ts",
   "exports": {
     ".": {
-      "types": "./carousel/carousel.d.ts",
+      "types": "./carousel/index.d.ts",
       "import": "./carousel/carousel.mjs",
       "require": "./carousel/carousel.js"
     },
@@ -27,7 +27,7 @@
     "typecheck": "tsc --noEmit --pretty false",
     "test": "jest",
     "test:release": "node --test .github/scripts/npm/npm-release.test.cjs .github/scripts/github/github-release.test.cjs",
-    "test:package": "node scripts/check-package.cjs",
+    "test:package": "node scripts/check-carousel.cjs",
     "test:browser": "node --test tests/browser/carousel.cjs"
   },
   "keywords": [
