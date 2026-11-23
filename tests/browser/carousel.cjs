@@ -64,11 +64,11 @@ before(async () => {
       React.createElement('span', null, item.id));
   }
   function Commit({ children }) { return children; }
-  const markup = renderToString(React.createElement(React.StrictMode, null,
+  const markup = loop => renderToString(React.createElement(React.StrictMode, null,
     React.createElement(Commit, null, React.createElement('div', { className: 'fixture' }, React.createElement(Carousel, {
-      items, keyExtractor: item => item.id, renderItem: item => React.createElement(ServerItem, { item })
+      items, loop, keyExtractor: item => item.id, renderItem: item => React.createElement(ServerItem, { item })
     })))));
-  harness = await createHarness(source, 'carousel/carousel.css', markup);
+  harness = await createHarness(source, 'carousel/carousel.css', url => markup(url.includes('continuous') ? 'continuous' : false));
 });
 after(async () => { await harness?.close(); });
 const selected = async (page, index) => {
@@ -81,6 +81,270 @@ async function mount(page, options = {}, items) {
 }
 
 for (const engine of [chromium, firefox, webkit].filter(engine => !process.env.CAROUSEL_BROWSERS || process.env.CAROUSEL_BROWSERS.split(',').includes(engine.name()))) {
+  test(`${engine.name()}: continuous looping, native input, playback, and slide identity`, { timeout: 120000 }, async t => {
+    const browser = await engine.launch(engine === chromium && process.env.CAROUSEL_BROWSER_CHANNEL ? { channel: process.env.CAROUSEL_BROWSER_CHANNEL, headless: true } : { headless: true });
+    try {
+      const page = await browser.newPage({ reducedMotion: 'reduce', viewport: { width: 1000, height: 800 } });
+      page.setDefaultTimeout(8000);
+      await page.goto(harness.url);
+      const originals = '.rc-viewport > .rc-slide';
+      await t.test('copies are visual only, keep unique IDs, and do not mount React components', async () => {
+        await mount(page, { loop: 'continuous', gap: 15.5, slidesPerView: 2.5, pagination: true });
+        assert.equal(await page.locator(originals).count(), 6);
+        assert.equal(await page.evaluate(() => window.mounts - window.cleanups), 6);
+        assert.equal(await page.locator('.rc-loop-copy .rc-slide').count(), 12);
+        const ids = await page.locator('[id]').evaluateAll(nodes => nodes.map(node => node.id));
+        assert.equal(new Set(ids).size, ids.length);
+        assert.equal(await page.locator('.rc-loop-copy').evaluateAll(nodes => nodes.every(node => node.inert && node.getAttribute('aria-hidden') === 'true')), true);
+        await page.locator('.rc-loop-copy input').first().evaluate(input => input.focus());
+        assert.equal(await page.locator('.rc-loop-copy').evaluateAll(nodes => nodes.some(node => node.contains(document.activeElement))), false);
+        await page.locator(originals + ' input').first().fill('retained');
+        for (let i = 0; i < 8; i++) { await invoke(page, 'next'); await selected(page, (i + 1) % 6); }
+        for (let i = 0; i < 8; i++) { await invoke(page, 'previous'); await selected(page, (7 - i + 6) % 6); }
+        assert.equal(await page.locator(originals + ' input').first().inputValue(), 'retained');
+        assert.equal(await page.evaluate(() => window.mounts - window.cleanups), 6);
+        assert.equal(await page.getByRole('button', { name: 'Go to slide 1 of 6', exact: true }).getAttribute('aria-current'), 'true');
+      });
+      await t.test('seam animations continue in the requested direction in LTR and RTL', async () => {
+        for (const dir of ['ltr', 'rtl']) {
+          await mount(page, { loop: 'continuous', gap: 13.375, dir });
+          await invoke(page, 'goTo', 5); await selected(page, 5);
+          await page.emulateMedia({ reducedMotion: 'no-preference' });
+          await page.evaluate(() => {
+            window.scrollSamples = [];
+            const view = document.querySelector('.rc-viewport');
+            window.sampleScroll = () => window.scrollSamples.push(view.scrollLeft * (getComputedStyle(view).direction === 'rtl' ? -1 : 1));
+            view.addEventListener('scroll', window.sampleScroll);
+            window.sampleScroll();
+            window.settled = [];
+          });
+          await invoke(page, 'next'); await selected(page, 0);
+          const samples = await page.evaluate(() => window.scrollSamples);
+          const increments = samples.slice(1).map((value, index) => value - samples[index]);
+          assert.ok(increments.some(delta => delta > 1), `forward motion: ${samples}`);
+          assert.ok(increments.filter(delta => delta < -1).every(delta => delta < -3000), `only cycle rebases can go backward: ${samples}`);
+          assert.equal(await page.evaluate(() => window.settled.length), 1);
+          assert.ok(await page.evaluate(() => window.settled.every(state => state.selectedIndex === 0)));
+          await invoke(page, 'previous'); await selected(page, 5);
+          await page.evaluate(() => document.querySelector('.rc-viewport').removeEventListener('scroll', window.sampleScroll));
+          await page.emulateMedia({ reducedMotion: 'reduce' });
+          await page.evaluate(() => { window.api.next(); window.api.next(); window.api.previous(); });
+          await selected(page, 0);
+        }
+      });
+      await t.test('wheel scrolling crosses both ends and preserves inline scroll behavior', async () => {
+        await mount(page, { loop: 'continuous', gap: 0 });
+        await invoke(page, 'goTo', 5); await selected(page, 5);
+        await page.locator('.rc-viewport').evaluate(view => { view.style.scrollBehavior = 'smooth'; });
+        await page.locator('.rc-viewport').hover();
+        await page.mouse.wheel(760, 0);
+        await page.waitForFunction(() => !window.state.isScrolling && window.state.selectedIndex === 0);
+        assert.equal(await page.locator('.rc-viewport').evaluate(view => view.style.scrollBehavior), 'smooth');
+        await page.mouse.wheel(-900, 0);
+        await page.waitForFunction(() => !window.state.isScrolling && window.state.selectedIndex >= 4);
+      });
+      await t.test('variable widths, groups, resize, item updates, and mode changes', async () => {
+        const items = [180.25, 230.75, 155.5, 290.25, 350.5, 220.125].map((width, i) => ({ id: 'item' + i, width }));
+        await mount(page, { loop: 'continuous', slidesPerView: 'auto', slidesToScroll: 'page', gap: 15.5 }, items);
+        await invoke(page, 'goTo', 4); await selected(page, 4);
+        await invoke(page, 'next'); await selected(page, 0);
+        await invoke(page, 'previous'); await selected(page, 4);
+        await invoke(page, 'goTo', 4); await selected(page, 4);
+        await page.addStyleTag({ content: '.fixture{width:420.25px;transform:rotate(-4deg) scale(1.1)} .rc-slide > div{height:240px}' });
+        await selected(page, 4);
+        await page.evaluate(() => window.mount(window.options, [window.items[4], ...window.items.filter((_, i) => i !== 4)]));
+        await selected(page, 0);
+        await page.evaluate(() => window.mount({ ...window.options, loop: true }));
+        await selected(page, 0);
+        assert.equal(await page.locator('.rc-loop-copy').count(), 0);
+        await page.evaluate(() => window.mount({ ...window.options, loop: 'continuous' }, window.items.slice(1)));
+        await selected(page, 0);
+        await invoke(page, 'previous'); await selected(page, 3);
+      });
+      await t.test('autoplay advances through the seam and still pauses on focus', async () => {
+        await page.emulateMedia({ reducedMotion: 'no-preference' });
+        await mount(page, { loop: 'continuous', autoplay: { interval: 350 }, pauseOnHover: false, startIndex: 4 });
+        await page.locator('body').evaluate(body => { body.tabIndex = -1; body.focus(); });
+        await page.getByRole('button', { name: 'Start slide rotation', exact: true }).evaluate(button => button.click());
+        await page.waitForFunction(() => window.state.selectedIndex === 0 && !window.state.isScrolling);
+        await page.locator(originals + ' input').first().focus();
+        await page.waitForFunction(() => window.state.playback === 'paused');
+      });
+      await t.test('center and end alignment cross both seams with variable widths', async () => {
+        await page.emulateMedia({ reducedMotion: 'reduce' });
+        for (const dir of ['ltr', 'rtl']) for (const align of ['center', 'end']) {
+          const values = [180.25, 230.75, 155.5, 290.25, 350.5].map((width, i) => ({ id: 'item' + i, width }));
+          await mount(page, { loop: 'continuous', slidesPerView: 'auto', dir, align, gap: 13.375 }, values);
+          for (const index of [0, 4, 0]) {
+            await invoke(page, 'goTo', index); await selected(page, index);
+            const error = await page.locator(originals).nth(index).evaluate((slide, align) => {
+              const fixture = document.querySelector('.fixture'), previous = fixture.style.transform;
+              fixture.style.transform = 'none';
+              try {
+                const rect = slide.getBoundingClientRect(), view = slide.parentElement.getBoundingClientRect();
+                return align === 'center' ? (rect.left + rect.right - view.left - view.right) / 2 :
+                  getComputedStyle(slide.parentElement).direction === 'rtl' ? rect.left - view.left : rect.right - view.right;
+              } finally { fixture.style.transform = previous; }
+            }, align);
+            const details = Math.abs(error) <= 1 ? '' : await page.locator('.rc-viewport').evaluate(view => ({
+              scroll: view.scrollLeft, width: getComputedStyle(view).width, gap: getComputedStyle(view).columnGap,
+              widths: Array.from(view.querySelectorAll(':scope > .rc-slide')).map(slide => getComputedStyle(slide).width),
+              state: window.state, settled: window.settled.slice(-3),
+            }));
+            assert.ok(Math.abs(error) <= 1, `${dir} ${align} slide ${index}: ${error} ${JSON.stringify(details)}`);
+          }
+        }
+      });
+      await t.test('hidden initialization and delayed media sizing preserve selection', async () => {
+        await page.evaluate(() => window.unmount());
+        await page.addStyleTag({ content: '.fixture{display:none}' });
+        await mount(page, { loop: 'continuous', startIndex: 3, slidesPerView: 'auto' }, Array.from({ length: 6 }, (_, i) => ({ id: 'item' + i })));
+        await page.addStyleTag({ content: '.fixture{display:block;transform:none;width:600.5px}' });
+        await page.waitForFunction(() => document.querySelectorAll('.rc-loop-copy .rc-slide').length === 12 && window.state.selectedIndex === 3);
+        await page.locator(originals + ' > div').first().evaluate(async element => {
+          const image = new Image(); image.alt = 'Landscape'; image.style.display = 'block';
+          image.src = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="400" height="30"></svg>');
+          element.append(image); await image.decode();
+        });
+        await page.waitForFunction(() => {
+          const view = document.querySelector('.rc-viewport'), slide = view.querySelectorAll(':scope > .rc-slide')[3];
+          return window.state.selectedIndex === 3 && !window.state.isScrolling && Math.abs(slide.getBoundingClientRect().left - view.getBoundingClientRect().left) <= 1;
+        });
+        await invoke(page, 'goTo', 5); await selected(page, 5);
+        await invoke(page, 'next'); await selected(page, 0);
+      });
+      await t.test('continuous server markup hydrates without recovery', async () => {
+        const hydrated = await browser.newPage({ reducedMotion: 'reduce' });
+        try {
+          await hydrated.goto(harness.url + '/?hydrate-continuous');
+          await mount(hydrated, { loop: 'continuous' });
+          await hydrated.waitForFunction(() => document.querySelectorAll('.rc-loop-copy .rc-slide').length === 12);
+          await invoke(hydrated, 'previous'); await selected(hydrated, 5);
+          assert.equal(await hydrated.evaluate(() => window.mounts - window.cleanups), 6);
+          assert.deepEqual(await hydrated.evaluate(() => window.errors), []);
+        } finally { await hydrated.close(); }
+      });
+      if (engine === chromium) await t.test('touch momentum crosses the seam without reaching a physical edge', async () => {
+        const touch = await browser.newPage({ hasTouch: true, isMobile: true, viewport: { width: 800, height: 600 }, reducedMotion: 'reduce' });
+        try {
+          await touch.goto(harness.url);
+          await mount(touch, { loop: 'continuous', gap: 0 });
+          await invoke(touch, 'goTo', 5); await selected(touch, 5);
+          const before = await touch.locator('.rc-viewport').evaluate(view => view.scrollLeft);
+          const cdp = await touch.context().newCDPSession(touch);
+          const box = await touch.locator('.rc-viewport').boundingBox();
+          const y = box.y + box.height / 2;
+          for (let swipe = 0; swipe < 2; swipe++) {
+            await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 500, y }] });
+            for (let x = 480; x >= 100; x -= 20) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y }] });
+            await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+            await touch.waitForFunction(() => !window.state.isScrolling);
+          }
+          const after = await touch.locator('.rc-viewport').evaluate(view => view.scrollLeft);
+          assert.ok(after < before - 1200, `touch crossed into the next cycle: ${before} -> ${after}`);
+          assert.ok(after > 0);
+          await cdp.detach();
+        } finally { await touch.close(); }
+      });
+      await t.test('empty, single, insufficient content and unmount', async () => {
+        await mount(page, { loop: 'continuous', slidesPerView: 3 }, [{ id: 'one' }, { id: 'two' }]);
+        await page.waitForFunction(() => !window.state.canNext && !window.state.canPrevious);
+        assert.equal(await page.locator('.rc-loop-copy .rc-slide').count(), 0);
+        assert.equal(await page.evaluate(() => window.state.canNext), false);
+        await mount(page, { loop: 'continuous' }, [{ id: 'one' }]);
+        assert.equal(await page.locator('.rc-loop-copy .rc-slide').count(), 0);
+        await mount(page, { loop: 'continuous' }, []);
+        assert.equal(await page.locator('.rc-slide').count(), 0);
+        await page.evaluate(() => window.unmount());
+        assert.equal(await page.evaluate(() => window.mounts - window.cleanups), 0);
+        assert.deepEqual(await page.evaluate(() => window.errors), []);
+      });
+    } finally { await browser.close(); }
+  });
+  test(`${engine.name()}: ancestor transforms preserve layout alignment`, { timeout: 120000 }, async () => {
+    const browser = await engine.launch(engine === chromium && process.env.CAROUSEL_BROWSER_CHANNEL ? { channel: process.env.CAROUSEL_BROWSER_CHANNEL, headless: true } : { headless: true });
+    try {
+      const page = await browser.newPage({ reducedMotion: 'reduce' });
+      page.setDefaultTimeout(8000);
+      await page.goto(harness.url);
+      await page.evaluate(() => {
+        // Independent oracle: compare actual DOM edges with presentation removed.
+        // Production measurements never change these styles.
+        window.layoutAlignmentError = (index, align = 'start') => {
+          const fixture = document.querySelector('.fixture');
+          const transform = fixture.style.transform;
+          fixture.style.transform = 'none';
+          try {
+            const view = document.querySelector('.rc-viewport'), slide = view.children[index];
+            const bounds = view.getBoundingClientRect(), rect = slide.getBoundingClientRect();
+            const style = getComputedStyle(view), rtl = style.direction === 'rtl';
+            const left = bounds.left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft);
+            const right = bounds.right - parseFloat(style.borderRightWidth) - parseFloat(style.paddingRight);
+            const error = align === 'center' ? (rect.left + rect.right - left - right) / 2 :
+              (align === 'end') !== rtl ? rect.right - right : rect.left - left;
+            return error / Number(fixture.style.zoom || 1);
+          } finally { fixture.style.transform = transform; }
+        };
+      });
+      const alignmentTolerance = engine === webkit ? 1 : 0.75;
+      const assertAligned = async (index, align = 'start') => {
+        await selected(page, index);
+        const error = await page.evaluate(({ index, align }) => window.layoutAlignmentError(index, align), { index, align });
+        // WebKit truncates fractional scrollLeft and can clamp RTL's origin at -1.
+        // Allow its native one-pixel limit without rounding navigation targets.
+        const diagnostic = Math.abs(error) <= alignmentTolerance ? '' : await page.locator('.rc-viewport').evaluate(view => ({
+          scroll: view.scrollLeft, direction: getComputedStyle(view).direction, width: getComputedStyle(view).width,
+          box: getComputedStyle(view).boxSizing, padding: getComputedStyle(view).padding, border: getComputedStyle(view).borderWidth,
+          widths: Array.from(view.children).map(slide => getComputedStyle(slide).width),
+        }));
+        assert.ok(Math.abs(error) <= alignmentTolerance, `slide ${index}, ${align}: settled layout error ${error}px ${JSON.stringify(diagnostic)}`);
+      };
+      for (const dir of ['ltr', 'rtl']) {
+        for (const [angle, height, scale, zoom] of [[0, 120, 1, 1], [-4, 480, 1, 1], [4, 240, 1.2, 1], [-4, 360, 0.85, 1.1]]) {
+          await page.setViewportSize({ width: 1000, height: 900 });
+          await page.addStyleTag({ content: `.fixture{width:min(83.375vw,600.5px)} .rc-viewport{align-items:flex-start} .rc-slide > div{height:${height}px} .rc-slide:nth-child(2n) > div{height:${height * 1.3}px}` });
+          await page.locator('.fixture').evaluate((fixture, { angle, scale, zoom }) => {
+            fixture.style.transform = `rotate(${angle}deg) scale(${scale})`;
+            fixture.style.zoom = String(zoom);
+          }, { angle, scale, zoom });
+          await mount(page, { dir, slidesPerView: 1, gap: 0, loop: true });
+          await invoke(page, 'goTo', 0); await assertAligned(0);
+          await invoke(page, 'next'); await assertAligned(1);
+          await invoke(page, 'previous'); await assertAligned(0);
+          await invoke(page, 'previous'); await assertAligned(5);
+          await invoke(page, 'next'); await assertAligned(0);
+          await invoke(page, 'goTo', 3); await assertAligned(3);
+          await page.setViewportSize({ width: 520, height: 900 });
+          await page.waitForFunction(() => window.state.selectedIndex === 3 && !window.state.isScrolling && Math.abs(window.layoutAlignmentError(3)) <= 1);
+          await assertAligned(3);
+        }
+        await page.locator('.fixture').evaluate(fixture => { fixture.style.transform = 'rotate(4deg) scale(1.15)'; fixture.style.zoom = '1'; });
+        await page.addStyleTag({ content: '.rc-viewport{box-sizing:border-box;border:3px solid;padding:0 11.25px 0 7.5px}.rc-slide{border:1px solid;padding:0 3.25px}' });
+        for (const align of ['start', 'center', 'end']) {
+          await mount(page, { dir, slidesPerView: 'auto', gap: 13.375, align, loop: true }, [180.25, 230.75, 155.5, 290.25, 350.5, 200.125].map((width, i) => ({ id: 'item' + i, width })));
+          await invoke(page, 'goTo', 2); await assertAligned(2, align);
+          await invoke(page, 'next'); await assertAligned(3, align);
+          await invoke(page, 'goTo', 0); await assertAligned(0, 'start');
+          await invoke(page, 'previous'); await assertAligned(5, 'end');
+          await invoke(page, 'next'); await assertAligned(0, 'start');
+        }
+        await page.addStyleTag({ content: '.rc-slide{margin-inline:2.375px 3.125px}' });
+        for (const align of ['start', 'center', 'end']) {
+          await mount(page, { dir, slidesPerView: 'auto', gap: 13.375, align }, [180.25, 230.75, 155.5, 290.25, 350.5, 200.125].map((width, i) => ({ id: 'item' + i, width })));
+          await invoke(page, 'goTo', 2); await assertAligned(2, align);
+        }
+        // Keep each direction's single-slide cases independent of box-model overrides.
+        await page.addStyleTag({ content: '.rc-viewport{border:0;padding:0}.rc-slide{border:0;padding:0;margin:0}' });
+        await page.setViewportSize({ width: 1000, height: 900 });
+        await mount(page, { dir, loop: true, gap: 13.375, slidesToScroll: 'page', breakpoints: { 500: { slidesPerView: 2 } } }, Array.from({ length: 6 }, (_, i) => ({ id: 'item' + i })));
+        await invoke(page, 'goTo', 0); await assertAligned(0);
+        await invoke(page, 'next'); await assertAligned(2);
+        await page.setViewportSize({ width: 520, height: 900 });
+        await page.waitForFunction(() => window.state.selectedIndex === 2 && !window.state.isScrolling && Math.abs(window.layoutAlignmentError(2)) <= 1 && window.state.visibleIndices.length === 1);
+        await invoke(page, 'next'); await assertAligned(3);
+      }
+    } finally { await browser.close(); }
+  });
   test(`${engine.name()}: measured navigation, fractional sizing, groups, RTL, focus, resize, playback, and hydration`, { timeout: 120000 }, async t => {
     const browser = await engine.launch(engine === chromium && process.env.CAROUSEL_BROWSER_CHANNEL ? { channel: process.env.CAROUSEL_BROWSER_CHANNEL, headless: true } : { headless: true });
     try {

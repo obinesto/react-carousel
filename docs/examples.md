@@ -392,5 +392,34 @@ export function Steps() {
 ```
 
 Set `loop` to wrap next and previous navigation between the ends.
-Touch and wheel scrolling stop at the physical edges and do not snap to slides.
+With `loop={true}`, touch and wheel scrolling stop at the physical edges and do not snap to slides.
 Navigation is disabled when the items fit in the viewport or the carousel has fewer than two items.
+
+## Continuous looping
+
+Set `loop="continuous"` to continue through either end without reversing direction.
+This applies to autoplay, navigation controls, touch, and wheel scrolling.
+
+```tsx
+import { Carousel } from "@obinesto/react-carousel";
+import "@obinesto/react-carousel/carousel/carousel.css";
+
+const topics = ["Design", "Engineering", "Research", "Writing"];
+
+export function ContinuousGallery() {
+  return (
+    <Carousel
+      aria-label="Topics"
+      items={topics}
+      renderItem={(topic) => <div>{topic}</div>}
+      loop="continuous"
+      autoplay={{ interval: 5000 }}
+      pagination
+    />
+  );
+}
+```
+
+Omit `autoplay` for manual navigation only. The default playback button starts and stops enabled autoplay.
+Use this mode with static images or text. Boundary copies cannot be clicked or focused.
+For forms, interactive widgets, or live media, use finite navigation or `loop={true}`.

@@ -51,7 +51,7 @@ export interface CarouselProps<T> extends CarouselLayout {
   keyExtractor?: (item: T, index: number) => string | number;
   /** Minimum carousel container widths, in CSS pixels. */
   breakpoints?: Record<number, CarouselLayout>;
-  loop?: boolean;
+  loop?: boolean | "continuous";
   startIndex?: number;
   autoplay?: false | { interval?: number; };
   pauseOnHover?: boolean;

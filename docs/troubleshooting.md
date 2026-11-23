@@ -17,6 +17,7 @@ With `slidesPerView="auto"`, give the item content a width when needed.
 
 In finite mode, previous is disabled at the beginning and next is disabled at the end.
 Set `loop` to wrap navigation between the ends. It does not enable navigation when all items already fit.
+For seamless navigation through either end, use `loop="continuous"` with [supported slide content](api.md#loop-modes).
 
 ## Autoplay is not advancing
 

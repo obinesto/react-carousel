@@ -9,9 +9,9 @@ See [Examples](examples.md) for complete usage examples and [Troubleshooting](tr
 | `slidesPerView`                                           | `1`             | Positive number or `"auto"` for content-sized slides.                            |
 | `gap`                                                     | `16`            | Nonnegative gap in CSS pixels.                                                   |
 | `align`                                                   | `"start"`       | Logical `"start"`, `"center"`, or `"end"` alignment.                             |
-| `slidesToScroll`                                          | `1`             | Positive integer or `"page"`. Numeric steps clamp at an edge before wrapping.    |
+| `slidesToScroll`                                          | `1`             | Positive integer or `"page"`. See loop modes for edge behavior.                   |
 | `breakpoints`                                             | None            | Container minimum widths mapped to layout overrides.                             |
-| `loop`                                                    | `false`         | Wrap button, keyboard, method, and autoplay navigation.                          |
+| `loop`                                                    | `false`         | `false` for finite navigation, `true` for endpoint wrapping, or `"continuous"` for seamless looping. |
 | `startIndex`                                              | `0`             | Initial logical index. Later changes do not control selection.                   |
 | `autoplay`                                                | `false`         | `false` or `{ interval?: number }`. Interval defaults to 5000 milliseconds.      |
 | `pauseOnHover`                                            | `true`          | Temporarily suspend autoplay while hovered. Set to `false` to continue rotation. |
@@ -32,6 +32,25 @@ See [Examples](examples.md) for complete usage examples and [Troubleshooting](tr
 
 `renderItem(item, index)` receives an item and its zero-based index and returns a React node.
 `keyExtractor(item, index)` receives the same arguments and returns a unique string or number.
+
+## Loop modes
+
+| Value | Navigation behavior |
+| --- | --- |
+| `false` | Stop at the first and last slides. |
+| `true` | Wrap buttons, keyboard commands, methods, and autoplay between the ends. Touch and wheel scrolling stop at physical edges. |
+| `"continuous"` | Continue forward or backward through the last-to-first boundary with controls, autoplay, touch, and wheel scrolling. |
+
+All modes disable navigation when fewer than two items exist or all items fit in the viewport.
+Continuous mode keeps indices and pagination based on the original items. `goTo()` takes the nearest route to the requested slide.
+The native scrollbar is hidden in continuous mode; buttons, keyboard navigation, touch, and wheel scrolling remain available.
+Numeric steps wrap around the item list; `"page"` advances by the slides needed to fill the viewport.
+Autoplay still pauses on manual navigation and focus entry, and respects reduced motion.
+
+Use continuous mode for images, text, and other static content. Slides repeated across a boundary are non-interactive visual copies.
+Use `loop={true}` or `loop={false}` for forms, interactive widgets, canvas, live audio or video, and embedded applications.
+For consistent appearance in continuous mode, style slide content with classes rather than element IDs or child-position selectors.
+See the [continuous loop example](examples.md#continuous-looping).
 
 ## Labels
 

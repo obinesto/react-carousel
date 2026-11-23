@@ -4,6 +4,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 const { renderToString } =
   require("react-dom/server.node") as typeof import("react-dom/server");
 import { Carousel, type CarouselApi } from "../src";
+import { createLoopCopy } from "../src/components/loopCopy";
 
 const items = ["a", "b", "c", "d"];
 let viewportWidth: number;
@@ -50,6 +51,30 @@ beforeEach(() => {
       resizeCallbacks.push(callback);
       return { observe: jest.fn(), disconnect, unobserve: jest.fn() };
     });
+  const computedStyle = window.getComputedStyle.bind(window);
+  jest.spyOn(window, "getComputedStyle").mockImplementation((element) => {
+    const style = computedStyle(element);
+    const viewport = element.classList.contains("rc-viewport");
+    const slide = element.classList.contains("rc-slide");
+    if (!viewport && !slide) return style;
+    const index = Array.from(element.parentElement!.children)
+      .filter(child => child.classList.contains("rc-slide")).indexOf(element);
+    return new Proxy(style, {
+      get(target, property) {
+        if (property === "width")
+          return `${viewport ? viewportWidth : widths[index] ?? 180}px`;
+        if (property === "boxSizing") return "border-box";
+        if (property === "direction")
+          return element.closest("[dir]")?.getAttribute("dir") ?? "ltr";
+        if (property === "columnGap")
+          return element.parentElement!.style.getPropertyValue("--rc-gap") || "16px";
+        return Reflect.get(target, property);
+      },
+    });
+  });
+  jest.spyOn(HTMLElement.prototype, "getClientRects").mockReturnValue(
+    [rect(0, viewportWidth)] as unknown as DOMRectList,
+  );
   jest
     .spyOn(HTMLElement.prototype, "getBoundingClientRect")
     .mockImplementation(function (this: HTMLElement) {
@@ -76,6 +101,59 @@ beforeEach(() => {
 afterEach(() => {
   jest.restoreAllMocks();
   jest.useRealTimers();
+});
+
+it("creates inert visual copies with isolated IDs and no active media or form names", () => {
+  const slide = document.createElement("div");
+  slide.innerHTML = '<label for="field">Name</label><input id="field" name="name" autofocus><svg><defs><linearGradient id="paint"></linearGradient></defs><rect fill="url(#paint)"></rect></svg><video src="clip.mp4" autoplay><source src="other.mp4"></video><iframe src="about:blank"></iframe><button onclick="alert(1)">Open</button>';
+  slide.querySelector("input")!.value = "typed value";
+  const copy = createLoopCopy(slide, "copy");
+  expect(copy.inert).toBe(true);
+  expect(copy).toHaveAttribute("aria-hidden", "true");
+  expect(copy.querySelector("input")).toHaveValue("typed value");
+  expect(copy.querySelector("input")).not.toHaveAttribute("name");
+  expect(copy.querySelector("input")).not.toHaveAttribute("autofocus");
+  expect(copy.querySelector("label")!.htmlFor).toBe(copy.querySelector("input")!.id);
+  expect(copy.querySelector("rect")!.getAttribute("fill")).toBe(`url(#${copy.querySelector("linearGradient")!.id})`);
+  expect(copy.querySelector("video")).not.toHaveAttribute("src");
+  expect(copy.querySelector("video")).not.toHaveAttribute("autoplay");
+  expect(copy.querySelector("source,iframe,[onclick]")).toBeNull();
+  expect(slide.querySelector("input")).toHaveAttribute("id", "field");
+});
+
+it("moves continuously through both ends without mounting repeated React items", () => {
+  const api = createRef<CarouselApi>();
+  const mounted = jest.fn();
+  const cleaned = jest.fn();
+  function Item({ item }: { item: string }) {
+    useEffect(() => { mounted(); return cleaned; }, []);
+    return <input id={item} defaultValue={item} />;
+  }
+  const { unmount } = render(<StrictMode><Carousel items={items} renderItem={item => <Item item={item} />} apiRef={api} loop="continuous" /></StrictMode>);
+  const mounts = mounted.mock.calls.length;
+  expect(mounts - cleaned.mock.calls.length).toBe(4);
+  expect(document.querySelectorAll(".rc-loop-copy .rc-slide")).toHaveLength(8);
+  act(() => api.current!.goTo(3));
+  finish();
+  act(() => api.current!.next());
+  expect(HTMLElement.prototype.scrollTo).toHaveBeenLastCalledWith({ left: 1761.5, behavior: "smooth" });
+  finish();
+  expect(api.current!.getState().selectedIndex).toBe(0);
+  act(() => api.current!.previous());
+  finish();
+  expect(api.current!.getState().selectedIndex).toBe(3);
+  expect(mounted).toHaveBeenCalledTimes(mounts);
+  unmount();
+  expect(cleaned).toHaveBeenCalledTimes(mounts);
+  expect(disconnect).toHaveBeenCalled();
+});
+
+it("server-renders continuous mode with one set of item content", () => {
+  const renderItem = jest.fn(item => <input id={item} />);
+  const html = renderToString(<Carousel items={items} renderItem={renderItem} loop="continuous" />);
+  expect(renderItem).toHaveBeenCalledTimes(4);
+  expect(html.match(/<input/g)).toHaveLength(4);
+  expect(html.match(/class="rc-loop-copy"/g)).toHaveLength(2);
 });
 
 it("mounts each interactive item once and does not autoplay by default", () => {
@@ -396,7 +474,9 @@ it("cleans up observers and side effects under Strict Mode", () => {
 
 it("renders deterministic server markup without accessing browser geometry", () => {
   const measure = jest.spyOn(HTMLElement.prototype, "getBoundingClientRect");
+  const styles = jest.spyOn(window, "getComputedStyle");
   measure.mockClear();
+  styles.mockClear();
   const html = renderToString(
     <Carousel
       items={items}
@@ -406,6 +486,7 @@ it("renders deterministic server markup without accessing browser geometry", () 
   );
   expect(html.match(/class="rc-slide/g)).toHaveLength(4);
   expect(measure).not.toHaveBeenCalled();
+  expect(styles).not.toHaveBeenCalled();
   expect(html).toContain("Stop slide rotation"); // The playback action is rendered in server markup.
 });
 
