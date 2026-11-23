@@ -25,6 +25,29 @@ The version becomes public only after you approve it on npm with 2FA.
 Tag pushes do not stage packages.
 The workflow uses npm trusted publishing. It does not use an npm token.
 
+### First publication
+
+For a package with no published versions, the release planner uses the version in `package.json` without incrementing it.
+For example, `1.0.0` is staged as `1.0.0`.
+The npm staging placeholder `0.0.0-stage` also counts as an initial publication, not an approved release.
+
+CI requires a configured trusted publisher and permission to publish the package.
+If the new package has no npm settings page for that configuration, stage it from an authenticated local session:
+
+```bash
+npm login
+npm ci
+npm run build:package
+npm stage publish --access public --tag latest
+```
+
+Staging a new name creates a public `0.0.0-stage` placeholder. Your staged code still requires approval before publication.
+See [npm staged publishing](https://docs.npmjs.com/staged-publishing/) for new-package behavior.
+Configure the trusted publisher in the package settings, then review the pending stage using the approval steps below.
+Resolve that stage before another CI run attempts the same version.
+
+### Trusted publisher setup
+
 Configure the trusted publisher in the npm package settings:
 
 1. Select GitHub Actions as the publisher.
@@ -41,11 +64,15 @@ The workflow cannot approve releases or change tags on existing versions.
 
 See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/) for the setup procedure.
 
-The workflow checks npm's `latest` tag and the published version list before selecting a release.
+### Version selection
+
+The workflow checks npm's `latest` tag and the published version list before selecting an update to an existing package.
 It also checks fetched Git tags for a target version collision.
 Git tags do not override npm's version history.
+An existing package with missing or inconsistent `latest` metadata stops the workflow.
+Registry access errors and network failures are not treated as first publications.
 
-For a registry with `latest` set to latest tag, these rules apply:
+For an existing package with `latest` set to `1.0.0`, these rules apply:
 
 | package.json version | Result                                            |
 | ---------------------- | --------------------------------------------------- |
@@ -103,6 +130,7 @@ An older source version cannot trigger another automatic patch.
 The Actions summary reports the selected version and any release-policy error.
 Registry, authentication, validation, and staging failures stop the release and show recovery guidance.
 The workflow rechecks the public registry immediately before staging the tested tarball.
+For an initial publication, this check stops the release if a published version has appeared since planning.
 Successful staging does not mean that the version is public.
 If staging succeeds but reporting fails, check npm's Staged Packages before retrying.
 Rerunning a commit already published as `latest` skips publication when npm's `gitHead` matches.

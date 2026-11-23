@@ -83,7 +83,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Resolve release from npm tags and published versions
+      - name: Plan initial or next npm release
         id: release
         run: node .github/scripts/npm/npm-release.cjs
 
@@ -110,7 +110,7 @@ jobs:
           npm pack --ignore-scripts --json > "$RUNNER_TEMP/npm-pack.json"
           node -e 'const fs = require("node:fs"); const [pack] = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + "/npm-pack.json", "utf8")); fs.appendFileSync(process.env.GITHUB_OUTPUT, "tarball=" + pack.filename + "\n");'
 
-      - name: Verify registry has not changed
+      - name: Verify release is still available
         if: steps.release.outputs.publish == 'true'
         env:
           EXPECTED_LATEST: ${{ steps.release.outputs.latest }}
