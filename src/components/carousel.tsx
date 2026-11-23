@@ -17,6 +17,7 @@ import type {
   CarouselProps,
   CarouselState,
 } from "../types/carousel";
+import { createLoopCopy } from "./loopCopy";
 
 const defaultLabels: CarouselLabels = {
   previous: "Previous slide",
@@ -39,12 +40,38 @@ function positive(value: number | undefined, fallback: number) {
     : fallback;
 }
 
-/** One mounted instance per item. Loop navigation wraps without cloning content. */
+function cssPixels(value: string) {
+  return parseFloat(value) || 0;
+}
+
+/** Used layout width, including borders and padding, unaffected by transforms. */
+function borderBoxWidth(style: CSSStyleDeclaration) {
+  return (
+    cssPixels(style.width) +
+    (style.boxSizing === "border-box"
+      ? 0
+      : cssPixels(style.paddingLeft) +
+        cssPixels(style.paddingRight) +
+        cssPixels(style.borderLeftWidth) +
+        cssPixels(style.borderRightWidth))
+  );
+}
+
+/** One mounted React instance per item in every navigation mode. */
 export function Carousel<T>(props: CarouselProps<T>): React.ReactElement {
-  const { items, renderItem, keyExtractor, loop = false, pauseOnHover = true } = props;
+  const {
+    items,
+    renderItem,
+    keyExtractor,
+    loop = false,
+    pauseOnHover = true,
+  } = props;
   const labels = { ...defaultLabels, ...props.labels };
   const id = useId();
   const viewportRef = useRef<HTMLDivElement>(null);
+  const beforeCopyRef = useRef<HTMLDivElement>(null);
+  const afterCopyRef = useRef<HTMLDivElement>(null);
+  const continuousRequested = loop === "continuous";
   const playbackPointerAction = useRef<boolean | null>(null);
   const keys = items.map((item, index) => keyExtractor?.(item, index) ?? index);
   const keySignature = JSON.stringify(keys);
@@ -95,6 +122,11 @@ export function Carousel<T>(props: CarouselProps<T>): React.ReactElement {
     widths: [] as number[],
     width: 0,
     max: 0,
+    cycle: 0,
+    origin: 0,
+    continuous: false,
+    destination: undefined as number | undefined,
+    rebasedPosition: undefined as number | undefined,
     rtl: false,
     pending: false,
     dragging: false,
@@ -119,21 +151,35 @@ export function Carousel<T>(props: CarouselProps<T>): React.ReactElement {
   const state: CarouselState = { ...view, slideCount: items.length, playback };
   const latest = useRef({
     state,
-    measure: () => { },
-    settle: () => { },
-    scroll: () => { },
-    advance: () => { },
-    release: () => { },
+    measure: () => {},
+    settle: (_force = false) => {},
+    scroll: () => {},
+    advance: () => {},
+    release: () => {},
     commands: null as CarouselApi | null,
   });
   latest.current.state = state;
   const position = () =>
-    (viewportRef.current?.scrollLeft ?? 0) * (engine.current.rtl ? -1 : 1);
+    (viewportRef.current?.scrollLeft ?? 0) * (engine.current.rtl ? -1 : 1) -
+    engine.current.origin;
+  const isOriginalVisible = (index: number) => {
+    const e = engine.current;
+    if (!e.continuous) return view.visibleIndices.includes(index);
+    const pos = position();
+    return (
+      e.starts[index] + e.widths[index] > pos + 0.5 &&
+      e.starts[index] < pos + e.width - 0.5
+    );
+  };
   const snapshot = (scrolling = engine.current.pending) => {
     const e = engine.current;
     const pos = position();
     const visibleIndices = e.starts.flatMap((start, index) =>
-      start + e.widths[index] > pos + 0.5 && start < pos + e.width - 0.5
+      (e.continuous ? [-e.cycle, 0, e.cycle] : [0]).some(
+        (offset) =>
+          start + offset + e.widths[index] > pos + 0.5 &&
+          start + offset < pos + e.width - 0.5,
+      )
         ? [index]
         : [],
     );
@@ -142,8 +188,8 @@ export function Carousel<T>(props: CarouselProps<T>): React.ReactElement {
     return {
       selectedIndex: e.index,
       visibleIndices,
-      canPrevious: available && (loop || target > 0.5),
-      canNext: available && (loop || target < e.max - 0.5),
+      canPrevious: available && (Boolean(loop) || target > 0.5),
+      canNext: available && (Boolean(loop) || target < e.max - 0.5),
       isScrolling: scrolling,
     };
   };
@@ -155,11 +201,31 @@ export function Carousel<T>(props: CarouselProps<T>): React.ReactElement {
   };
   const scrollTo = (left: number, smooth: boolean) => {
     viewportRef.current?.scrollTo({
-      left: left * (engine.current.rtl ? -1 : 1),
+      left: (left + engine.current.origin) * (engine.current.rtl ? -1 : 1),
       behavior: smooth ? "smooth" : "instant",
     });
   };
   const pause = () => setRequested(false);
+  const stopForInteraction = () => {
+    const e = engine.current;
+    if (e.continuous && e.destination !== undefined) {
+      e.destination = undefined;
+      scrollTo(position(), false);
+    }
+    pause();
+  };
+  const rebase = () => {
+    const e = engine.current;
+    if (!e.continuous) return;
+    const start = e.targets[0] ?? 0;
+    const pos = position();
+    const turns = Math.floor((pos - start + 1) / e.cycle);
+    if (turns) {
+      const next = pos - turns * e.cycle;
+      scrollTo(next, false);
+      e.rebasedPosition = position();
+    }
+  };
   const play = () => {
     if (!enabled || environment.reduced) return;
     const e = engine.current;
@@ -167,24 +233,53 @@ export function Carousel<T>(props: CarouselProps<T>): React.ReactElement {
       goTo(0, false);
     setRequested(true);
   };
-  const settle = () => {
+  const settle = (force = false) => {
     const e = engine.current;
     if (e.dragging) return;
+    // A scrollend from an interrupted command or an instant rebase can arrive
+    // after the next smooth command has started.
+    if (
+      e.continuous &&
+      !force &&
+      e.destination !== undefined &&
+      Math.abs(e.destination - position()) > 1
+    ) {
+      scheduleSettle();
+      return;
+    }
     clearTimeout(e.timer);
     const wasPending = e.pending;
+    const destination = e.destination;
+    const intendedIndex = e.index;
     e.pending = false;
+    e.destination = undefined;
     const pos = position();
+    const distance = (target: number) => {
+      const delta = Math.abs(target - pos);
+      if (!e.continuous) return delta;
+      const remainder = delta % e.cycle;
+      return Math.min(remainder, e.cycle - remainder);
+    };
     // Several logical slides can share the same physical edge target.
     if (Math.abs((e.targets[e.index] ?? 0) - pos) > 1) {
       e.index = e.targets.reduce(
         (best, target, index) =>
-          Math.abs(target - pos) < Math.abs(e.targets[best] - pos)
-            ? index
-            : best,
+          distance(target) < distance(e.targets[best]) ? index : best,
         0,
       );
       e.key = keys[e.index];
     }
+    if (
+      e.continuous &&
+      destination !== undefined &&
+      e.index === intendedIndex &&
+      Math.abs(destination - e.targets[e.index]) > e.cycle / 2
+    ) {
+      // Return a completed copy navigation to its exact original target instead
+      // of accumulating the browser's fractional scroll rounding across copies.
+      scrollTo(e.targets[e.index], false);
+      e.rebasedPosition = position();
+    } else rebase();
     publish(false);
     if (wasPending) {
       const settled = snapshot(false);
@@ -202,19 +297,44 @@ export function Carousel<T>(props: CarouselProps<T>): React.ReactElement {
     e.timer = setTimeout(() => {
       if (e.dragging || Math.abs(position() - e.lastPosition) > 0.5)
         scheduleSettle();
-      else latest.current.settle();
+      else latest.current.settle(true);
     }, 200);
   };
-  const goTo = (index: number, manual = true) => {
+  const goTo = (index: number, manual = true, direction = 0) => {
     if (manual) pause();
     if (!items.length || !Number.isFinite(index)) return;
     const e = engine.current;
     e.index = clampIndex(index, items.length);
     e.key = keys[e.index];
-    const target = e.targets[e.index] ?? 0;
+    let target = e.targets[e.index] ?? 0;
+    if (e.continuous) {
+      let reference = e.destination ?? position();
+      const candidates = [-e.cycle, 0, e.cycle]
+        .map((offset) => target + offset)
+        .filter((value) => value >= -e.origin && value <= e.max - e.origin);
+      let directional = candidates.filter(
+        (value) => !direction || (value - reference) * direction > 0.5,
+      );
+      if (!directional.length) {
+        rebase();
+        reference = position();
+        directional = candidates.filter(
+          (value) => !direction || (value - reference) * direction > 0.5,
+        );
+      }
+      if (directional.length) {
+        target = directional.reduce((best, value) =>
+          Math.abs(value - reference) < Math.abs(best - reference)
+            ? value
+            : best,
+        );
+      }
+    }
     if (!manual && !loop && e.max > 1 && target >= e.max - 0.5) pause();
     e.pending = Math.abs(target - position()) > 0.5;
+    e.destination = e.pending ? target : undefined;
     scrollTo(target, !environment.reduced);
+    if (!e.pending) rebase();
     publish();
     if (e.pending) scheduleSettle();
   };
@@ -224,6 +344,27 @@ export function Carousel<T>(props: CarouselProps<T>): React.ReactElement {
     if (e.max <= 1 || items.length < 2) return;
     const current = e.targets[e.index] ?? 0;
     let index = e.index;
+    if (e.continuous) {
+      if (step === "page") {
+        let distance = 0;
+        let count = 0;
+        let cursor = e.index;
+        while (count < items.length && distance < e.width - 0.5) {
+          if (direction < 0)
+            cursor = (cursor - 1 + items.length) % items.length;
+          distance += e.widths[cursor] + gap;
+          count++;
+          if (direction > 0) cursor = (cursor + 1) % items.length;
+        }
+        index += direction * Math.max(1, count);
+      } else index += direction * step;
+      goTo(
+        ((index % items.length) + items.length) % items.length,
+        manual,
+        direction,
+      );
+      return;
+    }
     if (step === "page") {
       if (direction > 0) {
         index = e.starts.findIndex(
@@ -262,49 +403,83 @@ export function Carousel<T>(props: CarouselProps<T>): React.ReactElement {
     const viewport = viewportRef.current;
     if (!viewport) return;
     const e = engine.current;
-    const bounds = viewport.getBoundingClientRect();
     const computed = getComputedStyle(viewport);
-    const width = parseFloat(computed.width) || bounds.width;
-    const scale = bounds.width / width;
-    setContainerWidth((previous) => (previous === width ? previous : width));
-    if (bounds.width <= 0) return;
+    const paddingStart = cssPixels(
+      computed.direction === "rtl"
+        ? computed.paddingRight
+        : computed.paddingLeft,
+    );
+    const paddingEnd = cssPixels(
+      computed.direction === "rtl"
+        ? computed.paddingLeft
+        : computed.paddingRight,
+    );
+    const width =
+      borderBoxWidth(computed) -
+      cssPixels(computed.borderLeftWidth) -
+      cssPixels(computed.borderRightWidth);
+    const contentWidth = width - paddingStart - paddingEnd;
+    setContainerWidth((previous) =>
+      previous === contentWidth ? previous : contentWidth,
+    );
+    if (contentWidth <= 0 || !viewport.getClientRects().length) return;
     e.rtl = computed.direction === "rtl";
-    const pos = position();
-    const slides = Array.from(viewport.children) as HTMLElement[];
+    const slides = Array.from(viewport.children).filter((child) =>
+      child.classList.contains("rc-slide"),
+    ) as HTMLElement[];
     e.width = width;
-    e.starts = slides.map((slide) => {
-      const rect = slide.getBoundingClientRect();
-      return (
-        (e.rtl ? bounds.right - rect.right : rect.left - bounds.left) / scale +
-        pos
-      );
+    // The structural stylesheet lays out one non-wrapping flex row in DOM order.
+    // Accumulate used CSS lengths rather than transformed bounds or integer offsets.
+    const slideStyles = slides.map((slide) => getComputedStyle(slide));
+    e.widths = slideStyles.map(borderBoxWidth);
+    const measuredGap = cssPixels(computed.columnGap);
+    let extent = paddingStart;
+    e.starts = slides.map((_, index) => {
+      const style = slideStyles[index];
+      const start =
+        extent + cssPixels(e.rtl ? style.marginRight : style.marginLeft);
+      extent =
+        start +
+        e.widths[index] +
+        cssPixels(e.rtl ? style.marginLeft : style.marginRight) +
+        (index < slides.length - 1 ? measuredGap : 0);
+      return start;
     });
-    e.widths = slides.map(
-      (slide) => slide.getBoundingClientRect().width / scale,
-    );
-    const extent = slides.length
-      ? e.starts[slides.length - 1] + e.widths[slides.length - 1]
-      : 0;
-    e.max = Math.max(0, extent - e.width);
-    e.targets = e.starts.map((start, index) =>
-      Math.max(
-        0,
-        Math.min(
-          e.max,
-          start -
-          (layout.align === "center"
-            ? (e.width - e.widths[index]) / 2
-            : layout.align === "end"
-              ? e.width - e.widths[index]
-              : 0),
-        ),
-      ),
-    );
+    e.max = Math.max(0, extent + paddingEnd - e.width);
+    e.continuous = continuousRequested && items.length > 1 && e.max > 1;
+    e.cycle = e.continuous ? extent - paddingStart + measuredGap : 0;
+    e.origin = e.cycle;
+    if (e.continuous) e.max = extent + 2 * e.cycle + paddingEnd - e.width;
+    e.targets = e.starts.map((start, index) => {
+      const aligned =
+        start -
+        paddingStart -
+        (layout.align === "center"
+          ? (contentWidth - e.widths[index]) / 2
+          : layout.align === "end"
+            ? contentWidth - e.widths[index]
+            : 0);
+      return e.continuous ? aligned : Math.max(0, Math.min(e.max, aligned));
+    });
     const retained = keys.indexOf(e.key);
     e.index = retained >= 0 ? retained : clampIndex(e.index, items.length);
     e.key = keys[e.index];
     e.pending = false;
+    e.destination = undefined;
+    e.rebasedPosition = undefined;
     clearTimeout(e.timer);
+    for (const [copy, name] of [
+      [beforeCopyRef.current, "before"],
+      [afterCopyRef.current, "after"],
+    ] as const) {
+      copy?.replaceChildren(
+        ...(e.continuous
+          ? slides.map((slide, index) =>
+              createLoopCopy(slide, `${id}-${name}-${index}`),
+            )
+          : []),
+      );
+    }
     scrollTo(e.targets[e.index] ?? 0, false);
     publish(false);
   };
@@ -316,6 +491,13 @@ export function Carousel<T>(props: CarouselProps<T>): React.ReactElement {
   latest.current.measure = measure;
   latest.current.settle = settle;
   latest.current.scroll = () => {
+    const e = engine.current;
+    if (e.rebasedPosition !== undefined) {
+      const rebasedPosition = e.rebasedPosition;
+      e.rebasedPosition = undefined;
+      if (Math.abs(position() - rebasedPosition) <= 1) return;
+    }
+    if (engine.current.destination === undefined) rebase();
     engine.current.pending = true;
     publish(true);
     scheduleSettle();
@@ -348,8 +530,22 @@ export function Carousel<T>(props: CarouselProps<T>): React.ReactElement {
     const observer =
       typeof ResizeObserver === "undefined" ? null : new ResizeObserver(resize);
     observer?.observe(viewport);
-    Array.from(viewport.children).forEach((slide) => observer?.observe(slide));
-    const mutation = new MutationObserver(resize);
+    Array.from(viewport.children)
+      .filter((child) => child.classList.contains("rc-slide"))
+      .forEach((slide) => observer?.observe(slide));
+    const mutation = new MutationObserver((records) => {
+      if (
+        records.some(
+          (record) =>
+            !(
+              record.target instanceof Element
+                ? record.target
+                : record.target.parentElement
+            )?.closest(".rc-loop-copy"),
+        )
+      )
+        resize();
+    });
     mutation.observe(viewport, {
       childList: true,
       subtree: true,
@@ -363,7 +559,15 @@ export function Carousel<T>(props: CarouselProps<T>): React.ReactElement {
     });
     viewport.addEventListener("scroll", scroll, { passive: true });
     viewport.addEventListener("scrollend", end);
-    viewport.addEventListener("load", resize, true);
+    const load = (event: Event) => {
+      if (!(event.target as Element).closest(".rc-loop-copy")) resize();
+    };
+    const input = () => {
+      if (engine.current.continuous) resize();
+    };
+    viewport.addEventListener("load", load, true);
+    viewport.addEventListener("input", input);
+    viewport.addEventListener("change", input);
     window.addEventListener("resize", resize);
     window.addEventListener("pointerup", release);
     window.addEventListener("pointercancel", release);
@@ -375,13 +579,15 @@ export function Carousel<T>(props: CarouselProps<T>): React.ReactElement {
       clearTimeout(engine.current.timer);
       viewport.removeEventListener("scroll", scroll);
       viewport.removeEventListener("scrollend", end);
-      viewport.removeEventListener("load", resize, true);
+      viewport.removeEventListener("load", load, true);
+      viewport.removeEventListener("input", input);
+      viewport.removeEventListener("change", input);
       window.removeEventListener("resize", resize);
       window.removeEventListener("pointerup", release);
       window.removeEventListener("pointercancel", release);
       window.removeEventListener("blur", release);
     };
-  }, [keySignature]);
+  }, [keySignature, continuousRequested]);
   useEffect(() => {
     latest.current.measure();
   }, [perView, gap, layout.align, step, props.dir, loop]);
@@ -422,20 +628,20 @@ export function Carousel<T>(props: CarouselProps<T>): React.ReactElement {
       onPointerDown:
         slot === "playback"
           ? () => {
-            playbackPointerAction.current = requested;
-          }
+              playbackPointerAction.current = requested;
+            }
           : undefined,
       onClick:
         slot === "playback"
           ? (event) => {
-            const stop =
-              event.detail > 0 && playbackPointerAction.current !== null
-                ? playbackPointerAction.current
-                : requested;
-            playbackPointerAction.current = null;
-            if (stop) pause();
-            else play();
-          }
+              const stop =
+                event.detail > 0 && playbackPointerAction.current !== null
+                  ? playbackPointerAction.current
+                  : requested;
+              playbackPointerAction.current = null;
+              if (stop) pause();
+              else play();
+            }
           : onClick,
       disabled,
       children: text,
@@ -460,7 +666,7 @@ export function Carousel<T>(props: CarouselProps<T>): React.ReactElement {
       dir={props.dir}
       onFocusCapture={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget as Node | null))
-          pause();
+          stopForInteraction();
       }}
       onMouseEnter={() =>
         setEnvironment((previous) => ({ ...previous, hovered: true }))
@@ -499,12 +705,13 @@ export function Carousel<T>(props: CarouselProps<T>): React.ReactElement {
         id={id}
         ref={viewportRef}
         className={`rc-viewport ${props.viewportClassName ?? ""}`}
+        data-loop={continuousRequested ? "continuous" : undefined}
         role="group"
         tabIndex={0}
         aria-label={props["aria-label"] ?? "Slides"}
         onPointerDown={() => {
           engine.current.dragging = true;
-          pause();
+          stopForInteraction();
         }}
         onPointerUp={() => {
           engine.current.dragging = false;
@@ -514,14 +721,14 @@ export function Carousel<T>(props: CarouselProps<T>): React.ReactElement {
           engine.current.dragging = false;
           if (engine.current.pending) scheduleSettle();
         }}
-        onWheel={pause}
+        onWheel={stopForInteraction}
         onKeyDown={(event) => {
           if (event.target !== event.currentTarget) return;
           if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
             event.preventDefault();
             move(
               (event.key === "ArrowRight" ? 1 : -1) *
-              (engine.current.rtl ? -1 : 1),
+                (engine.current.rtl ? -1 : 1),
             );
           } else if (event.key === "Home" || event.key === "End") {
             event.preventDefault();
@@ -529,6 +736,14 @@ export function Carousel<T>(props: CarouselProps<T>): React.ReactElement {
           }
         }}
       >
+        {continuousRequested && (
+          <div
+            ref={beforeCopyRef}
+            className="rc-loop-copy"
+            aria-hidden="true"
+            inert
+          />
+        )}
         {items.map((item, index) => (
           <div
             key={keys[index]}
@@ -542,20 +757,27 @@ export function Carousel<T>(props: CarouselProps<T>): React.ReactElement {
                   event.relatedTarget as Node | null,
                 )
               ) {
-                event.currentTarget.inert =
-                  !view.visibleIndices.includes(index);
+                event.currentTarget.inert = !isOriginalVisible(index);
               }
             }}
             ref={(node) => {
               if (node)
                 node.inert =
-                  !view.visibleIndices.includes(index) &&
+                  !isOriginalVisible(index) &&
                   !node.contains(document.activeElement);
             }}
           >
             {renderItem(item, index)}
           </div>
         ))}
+        {continuousRequested && (
+          <div
+            ref={afterCopyRef}
+            className="rc-loop-copy"
+            aria-hidden="true"
+            inert
+          />
+        )}
       </div>
       {props.pagination && (
         <div

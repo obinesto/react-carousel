@@ -41,7 +41,7 @@ npm run build:package
 npm stage publish --access public --tag latest
 ```
 
-Staging a new name creates a public `0.0.0-stage` placeholder. Your staged code still requires approval before publication.
+Staging a new name creates a public `0.0.0-stage` placeholder.  Staged code requires approval before publication.
 See [npm staged publishing](https://docs.npmjs.com/staged-publishing/) for new-package behavior.
 Configure the trusted publisher in the package settings, then review the pending stage using the approval steps below.
 Resolve that stage before another CI run attempts the same version.
@@ -139,6 +139,11 @@ npm rejects a duplicate version instead of replacing it.
 
 ## Create a GitHub release and notes
 
+Write the release body in `.github/releases/vMAJOR.MINOR.PATCH.md`, such as `.github/releases/v1.0.0.md`.
+Use Markdown to describe the features, fixes, breaking changes, and required consumer actions for that version.
+Only include sections relevant to the release.
+Commit the file before staging the npm release so the published source commit contains its notes.
+
 Create the tag after you approve the release and its version is public on npm.
 Use stable version tags in the form `vMAJOR.MINOR.PATCH`, such as `v1.0.0`.
 
@@ -173,10 +178,9 @@ Use that commit even if your local branch has newer commits.
 If npm has no `gitHead`, confirm the source commit from the release workflow before tagging.
 If the tag already exists, verify its commit. Do not overwrite it.
 Pushing the tag starts the `GitHub Release Notes` workflow in `github-release.yml`.
-The tagged commit must contain this workflow file.
-It creates a GitHub Release associated with that exact tag and generates its release notes.
-The notes include merged pull requests, contributors, and a changelog link.
-See [GitHub's generated release notes](https://docs.github.com/en/repositories/releasing-projects-on-github/automatically-generated-release-notes) for details.
+The tagged commit must contain this workflow file and the matching release-notes file.
+It creates a GitHub Release associated with that exact tag and uses the Markdown file as its body.
+A missing, empty, or unreadable notes file stops release creation.
 
 Open the release page to review or edit the notes.
 If a release already exists for the tag, the workflow leaves its notes and publication state unchanged.

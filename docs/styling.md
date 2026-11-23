@@ -21,6 +21,16 @@ The default stylesheet provides appearance rules; `core.css` provides layout for
 Use `style` for inline root styles. Set slide widths through `slidesPerView`, and spacing through `gap`.
 For content-sized slides, use `slidesPerView="auto"` and set the width of each item's content.
 
+## Transforms and slide layout
+
+You can rotate, translate, or scale a container around the carousel without adjusting navigation.
+Perspective and 3D transforms are outside the supported styling options.
+For effects on individual slides, transform the content returned by `renderItem`; navigation follows the slide wrapper's original position.
+
+Use `slidesPerView`, `gap`, and `align` to configure the slide layout.
+Keep the stylesheet's `flex-direction`, `flex-wrap`, `order`, and `justify-content` rules unchanged.
+Percentage gaps and automatic slide margins are unsupported.
+
 ## Customize the default controls
 
 With the default stylesheet, add `className="my-gallery"` to the carousel and set these variables.

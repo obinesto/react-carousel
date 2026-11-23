@@ -38,7 +38,7 @@ The default layout shows one slide with a 16-pixel gap. Navigation is finite, an
 - Use `slidesPerView`, `gap`, and `align` to configure the layout.
 - Use `breakpoints` for responsive settings based on the carousel's container width.
 - Use `slidesPerView="auto"` for content-sized slides and `slidesToScroll="page"` for group navigation.
-- Set `loop` to wrap navigation between the ends. Native gestures stop at physical edges.
+- Set `loop` to wrap navigation between the ends, or `loop="continuous"` for seamless looping with image and text slides. See [loop modes](https://github.com/obinesto/react-carousel/blob/main/docs/api.md#loop-modes).
 - Set `autoplay={{ interval: 5000 }}` to enable rotation with a playback control and reduced-motion handling.
 - `pauseOnHover` defaults to `true`. Set it to `false` to keep autoplay advancing while hovered.
 - `controls` customizes built-in buttons. The optional `apiRef` exposes commands for external controls.

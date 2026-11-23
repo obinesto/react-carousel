@@ -14,11 +14,15 @@ const AsyncFunction = Object.getPrototypeOf(async function () { }).constructor;
 const run = new AsyncFunction('github', 'context', 'core', script);
 
 function fixture() {
-  const calls = { lookup: [], tag: [], create: [], notices: [] };
+  const calls = { lookup: [], tag: [], notes: [], create: [], notices: [] };
   let release;
   const github = {
     rest: {
       repos: {
+        getContent: async input => {
+          calls.notes.push(input);
+          return { data: { type: 'file', encoding: 'base64', content: Buffer.from('## Changes\n\n- Custom release notes.\n').toString('base64') } };
+        },
         getReleaseByTag: async input => {
           calls.lookup.push(input);
           if (!release) throw Object.assign(new Error('Not found'), { status: 404 });
@@ -26,7 +30,7 @@ function fixture() {
         },
         createRelease: async input => {
           calls.create.push(input);
-          release = { html_url: 'https://github.com/obinesto/react-carousel/releases/tag/v1.2.3', body: 'Generated notes' };
+          release = { html_url: 'https://github.com/obinesto/react-carousel/releases/tag/v1.2.3', body: input.body };
           return { data: release };
         },
       },
@@ -48,14 +52,16 @@ function fixture() {
   return { github, context, core, calls, run: () => run(github, context, core) };
 }
 
-test('publishes generated notes for the exact existing version tag', async () => {
+test('publishes local Markdown from the exact tagged commit without generated notes', async () => {
   const f = fixture();
   await f.run();
   assert.deepEqual(f.calls.tag, [{ owner: 'obinesto', repo: 'react-carousel', ref: 'tags/v1.2.3' }]);
+  assert.deepEqual(f.calls.notes, [{ owner: 'obinesto', repo: 'react-carousel', path: '.github/releases/v1.2.3.md', ref: 'published-commit' }]);
   assert.deepEqual(f.calls.create, [{
     owner: 'obinesto', repo: 'react-carousel', tag_name: 'v1.2.3',
     target_commitish: 'published-commit', name: 'v1.2.3',
-    generate_release_notes: true, draft: false, prerelease: false, make_latest: 'legacy',
+    body: '## Changes\n\n- Custom release notes.\n',
+    generate_release_notes: false, draft: false, prerelease: false, make_latest: 'legacy',
   }]);
 });
 
@@ -66,6 +72,7 @@ test('rerunning a tag event preserves its existing release and notes', async () 
   assert.equal(f.calls.lookup.length, 2);
   assert.equal(f.calls.create.length, 1);
   assert.equal(f.calls.tag.length, 1);
+  assert.equal(f.calls.notes.length, 1);
   assert.match(f.calls.notices.at(-1), /Release already exists/);
 });
 
@@ -76,6 +83,7 @@ test('preserves a manually authored draft release', async () => {
   await f.run();
   assert.equal(f.calls.create.length, 0);
   assert.equal(f.calls.tag.length, 0);
+  assert.equal(f.calls.notes.length, 0);
   assert.equal(existing.body, 'Maintainer notes');
   assert.equal(existing.draft, true);
 });
@@ -119,4 +127,47 @@ test('reports release creation failures', async () => {
   const f = fixture();
   f.github.rest.repos.createRelease = async () => { throw new Error('Creation failed'); };
   await assert.rejects(f.run, /Creation failed/);
+});
+
+test('stops release creation when the tagged commit has no notes file', async () => {
+  const f = fixture();
+  f.github.rest.repos.getContent = async () => { throw Object.assign(new Error('Not found'), { status: 404 }); };
+  await assert.rejects(f.run, /Missing \.github\/releases\/v1\.2\.3\.md in the tagged commit/);
+  assert.equal(f.calls.create.length, 0);
+});
+
+for (const status of [403, 500]) {
+  test(`propagates notes lookup HTTP ${status} without creating a release`, async () => {
+    const f = fixture();
+    f.github.rest.repos.getContent = async () => { throw Object.assign(new Error('Notes lookup failed'), { status }); };
+    await assert.rejects(f.run, /Notes lookup failed/);
+    assert.equal(f.calls.create.length, 0);
+  });
+}
+
+for (const content of ['', ' \n\t']) {
+  test(`rejects empty notes ${JSON.stringify(content)}`, async () => {
+    const f = fixture();
+    f.github.rest.repos.getContent = async () => ({ data: { type: 'file', encoding: 'base64', content: Buffer.from(content).toString('base64') } });
+    await assert.rejects(f.run, /Release notes .* are empty/);
+    assert.equal(f.calls.create.length, 0);
+  });
+}
+
+for (const data of [[], { type: 'dir' }, { type: 'file', encoding: 'none', content: '' }, { type: 'file', encoding: 'base64' }]) {
+  test(`rejects unreadable notes ${JSON.stringify(data)}`, async () => {
+    const f = fixture();
+    f.github.rest.repos.getContent = async () => ({ data });
+    await assert.rejects(f.run, /Cannot read .*Release notes must be a Markdown file/);
+    assert.equal(f.calls.create.length, 0);
+  });
+}
+
+test('preserves Markdown, Unicode, and trailing newlines without interpretation', async () => {
+  const f = fixture();
+  const body = '## Changes\n\n- RTL: مرحبا\n- `$(example)` and ${{ example }} remain text.\n';
+  f.github.rest.repos.getContent = async () => ({ data: { type: 'file', encoding: 'base64', content: Buffer.from(body).toString('base64') } });
+  await f.run();
+  assert.equal(f.calls.create[0].body, body);
+  assert.equal(f.calls.create[0].generate_release_notes, false);
 });
